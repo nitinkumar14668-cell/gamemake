@@ -1,0 +1,6 @@
+{
+  "name": "Roblox Web Studio - 3D Game Creator & Lua Engine",
+  "description": "Create, build, and test Roblox games directly in your browser with 3D model placement, transform gizmos, Lua scripting engine, and live playtest mode.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
