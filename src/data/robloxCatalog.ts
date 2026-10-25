@@ -3,8 +3,10 @@ import { HOUSE_MODELS } from './modelsHouses';
 import { HOSPITAL_MODELS } from './modelsHospitals';
 import { ROAD_MODELS } from './modelsRoads';
 import { TRAIN_MODELS } from './modelsTrains';
+import { ALL_HOME_BUILDING_MODELS } from './modelsHomeBuilding';
 
 export const CATALOG_MODELS: CatalogModelTemplate[] = [
+  ...ALL_HOME_BUILDING_MODELS,
   ...HOUSE_MODELS,
   ...HOSPITAL_MODELS,
   ...ROAD_MODELS,

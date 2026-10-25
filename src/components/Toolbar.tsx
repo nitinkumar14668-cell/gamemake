@@ -52,6 +52,9 @@ interface ToolbarProps {
   onImportJSON: () => void;
   onOpenPublishModal: () => void;
   onOpenCustomModelCreator: () => void;
+  onOpenOpenCode: () => void;
+  isCommandsChatOpen: boolean;
+  onToggleCommandsChat: () => void;
   showEditTouchControls: boolean;
   onToggleEditTouchControls: () => void;
   placeName: string;
@@ -80,6 +83,9 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onImportJSON,
   onOpenPublishModal,
   onOpenCustomModelCreator,
+  onOpenOpenCode,
+  isCommandsChatOpen,
+  onToggleCommandsChat,
   showEditTouchControls,
   onToggleEditTouchControls,
   placeName,
@@ -298,6 +304,39 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           >
             <Plus className="w-5 h-5 text-emerald-600" />
             <span className="text-[10px] mt-0.5 font-bold text-emerald-900">+ Custom</span>
+          </button>
+
+          {/* OpenCode Free AI Plugin Button */}
+          <button
+            onClick={() => {
+              onOpenOpenCode();
+              sound.playClick();
+            }}
+            className="flex flex-col items-center justify-center min-w-[72px] h-[52px] px-1 bg-linear-to-b from-indigo-50 to-purple-50 hover:from-indigo-100 hover:to-purple-100 border border-purple-300 rounded text-purple-900 shadow-xs transition group"
+            title="OpenCode Free AI Studio Plugin (Coding Free Modules & Luau AI Generator)"
+          >
+            <div className="flex items-center gap-0.5">
+              <Sparkles className="w-4 h-4 text-purple-600 animate-pulse" />
+              <Code className="w-4 h-4 text-indigo-600" />
+            </div>
+            <span className="text-[10px] mt-0.5 font-bold text-purple-900 group-hover:text-purple-700">OpenCode AI</span>
+          </button>
+
+          {/* Commands Chat Section Toggle Button */}
+          <button
+            onClick={() => {
+              onToggleCommandsChat();
+              sound.playClick();
+            }}
+            className={`flex flex-col items-center justify-center min-w-[62px] h-[52px] px-1 rounded border shadow-xs transition ${
+              isCommandsChatOpen
+                ? 'bg-blue-600 border-blue-700 text-white shadow-inner'
+                : 'bg-white border-[#C8C8C8] hover:bg-gray-100 text-gray-800'
+            }`}
+            title="Toggle Right-Side Commands & OpenCode AI Chat Section"
+          >
+            <MessageSquare className={`w-4 h-4 ${isCommandsChatOpen ? 'text-white' : 'text-blue-600'}`} />
+            <span className="text-[10px] mt-0.5 font-bold">Commands</span>
           </button>
 
           {/* Part Insert with dropdown */}

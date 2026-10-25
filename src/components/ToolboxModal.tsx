@@ -47,14 +47,18 @@ export const ToolboxModal: React.FC<ToolboxModalProps> = ({
 
   const categories = [
     { id: 'all', label: 'All Modules', icon: Layers },
+    { id: 'walls', label: 'Walls & Partitions', icon: Building },
+    { id: 'floors', label: 'Floors & Tiles', icon: Box },
+    { id: 'furniture', label: 'Home Furniture', icon: Home },
+    { id: 'kitchen', label: 'Kitchen & Dining', icon: Sparkles },
+    { id: 'decor', label: 'Home Decor & Lights', icon: Zap },
     { id: 'houses', label: 'Houses & Villas', icon: Home },
     { id: 'hospitals', label: 'Hospitals & Medical', icon: HeartPulse },
     { id: 'roads', label: 'Roads & Highways', icon: Milestone },
     { id: 'trains', label: 'Trains & Tracks', icon: Train },
     { id: 'custom', label: `My Custom (${customModels.length})`, icon: FolderPlus },
     { id: 'mechanics', label: 'Gameplay & Scripts', icon: Zap },
-    { id: 'buildings', label: 'Castles & Towers', icon: Building },
-    { id: 'nature', label: 'Nature & Decor', icon: Trees },
+    { id: 'nature', label: 'Nature & Landscape', icon: Trees },
     { id: 'vehicles', label: 'Vehicles & NPCs', icon: Car },
     { id: 'basic', label: 'Basic Shapes', icon: Box },
   ];

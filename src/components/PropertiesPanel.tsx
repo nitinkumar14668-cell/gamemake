@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { RobloxObject, MaterialType, LightingSettings } from '../types/studio';
+import { RobloxObject, MaterialType, LightingSettings, SkyboxType } from '../types/studio';
 import {
   Code,
   Sliders,
@@ -15,8 +15,19 @@ import {
   ChevronDown,
   ChevronRight,
   CloudSun,
+  Globe,
+  Cloud,
 } from 'lucide-react';
 import { sound } from '../utils/audio';
+
+const SKYBOX_OPTIONS: { id: SkyboxType; label: string; desc: string; color: string }[] = [
+  { id: 'Clear', label: 'Clear (Classic)', desc: 'Roblox blue sky with clouds', color: '#38BDF8' },
+  { id: 'Night', label: 'Night Starfield', desc: 'Starry night sky with moonlight', color: '#6366F1' },
+  { id: 'Sunset', label: 'Golden Sunset', desc: 'Warm orange twilight horizon', color: '#F97316' },
+  { id: 'Nebula', label: 'Cosmic Nebula', desc: 'Deep violet space with stars', color: '#A855F7' },
+  { id: 'Cloudy', label: 'Overcast Cloudy', desc: 'Muted slate & silver storm clouds', color: '#64748B' },
+  { id: 'SciFiRed', label: 'Sci-Fi Crimson', desc: 'Martian red atmosphere & fog', color: '#EF4444' },
+];
 
 interface PropertiesPanelProps {
   selectedObject: RobloxObject | null;
@@ -129,8 +140,65 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
       {isLightingSectionOpen && (
         <div className="p-2 space-y-3 divide-y divide-amber-100 text-gray-700">
-          {/* 1. Time of Day (ClockTime) */}
+          {/* 1. Skybox Environment Dropdown */}
           <div className="space-y-1.5 pt-1">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-semibold text-gray-800 flex items-center gap-1">
+                <Globe className="w-3.5 h-3.5 text-sky-600" />
+                <span>Skybox (Environment)</span>
+              </span>
+              <span className="font-mono text-[10px] text-sky-900 bg-sky-100 px-1.5 py-0.5 rounded font-bold">
+                {lightingSettings.skybox || 'Clear'}
+              </span>
+            </div>
+
+            {/* Dropdown Select */}
+            <select
+              value={lightingSettings.skybox || 'Clear'}
+              onChange={(e) => {
+                onUpdateLighting({ skybox: e.target.value as SkyboxType });
+                sound.playClick();
+              }}
+              className="w-full bg-white border border-gray-300 rounded px-2 py-1 text-xs text-gray-800 focus:outline-hidden focus:border-blue-500 font-medium cursor-pointer shadow-2xs"
+            >
+              {SKYBOX_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label} - {opt.desc}
+                </option>
+              ))}
+            </select>
+
+            {/* Quick Skybox Preview Chips (1-Click Switch) */}
+            <div className="grid grid-cols-3 gap-1 pt-0.5">
+              {SKYBOX_OPTIONS.map((opt) => {
+                const isActive = (lightingSettings.skybox || 'Clear') === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    onClick={() => {
+                      onUpdateLighting({ skybox: opt.id });
+                      sound.playClick();
+                    }}
+                    title={`${opt.label}: ${opt.desc}`}
+                    className={`flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] font-medium transition text-left border cursor-pointer ${
+                      isActive
+                        ? 'bg-sky-100 border-sky-400 text-sky-900 ring-1 ring-sky-400 shadow-xs'
+                        : 'bg-white hover:bg-gray-100 border-gray-200 text-gray-700'
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs"
+                      style={{ backgroundColor: opt.color }}
+                    />
+                    <span className="truncate">{opt.label.split(' ')[0]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. Time of Day (ClockTime) */}
+          <div className="space-y-1.5 pt-2">
             <div className="flex items-center justify-between text-[11px]">
               <span className="font-semibold text-gray-800 flex items-center gap-1">
                 <CloudSun className="w-3 h-3 text-amber-600" />

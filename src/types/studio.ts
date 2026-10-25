@@ -88,7 +88,21 @@ export interface RobloxObject {
 export interface CatalogModelTemplate {
   id: string;
   name: string;
-  category: 'mechanics' | 'buildings' | 'nature' | 'vehicles' | 'basic' | 'houses' | 'hospitals' | 'roads' | 'trains';
+  category:
+    | 'mechanics'
+    | 'buildings'
+    | 'nature'
+    | 'vehicles'
+    | 'basic'
+    | 'houses'
+    | 'hospitals'
+    | 'roads'
+    | 'trains'
+    | 'walls'
+    | 'floors'
+    | 'furniture'
+    | 'kitchen'
+    | 'decor';
   description: string;
   badge?: string;
   previewColor: string;
@@ -110,10 +124,13 @@ export interface LogMessage {
   message: string;
 }
 
+export type SkyboxType = 'Clear' | 'Night' | 'Sunset' | 'Nebula' | 'Cloudy' | 'SciFiRed';
+
 export interface LightingSettings {
   clockTime: number; // 0 to 24 (hours, e.g. 14.0 = 2 PM)
   ambientColor: string; // Hex color for hemisphere / ambient light
   shadowSoftness: number; // 0 (sharp) to 1 (very soft)
   sunBrightness: number; // 0 to 2
+  skybox: SkyboxType;
 }
 

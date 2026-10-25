@@ -7,6 +7,8 @@ import {
   createSpeedArrowTexture,
   createRobloxFaceTexture,
   createRobloxShirtTexture,
+  getSkyboxTexture,
+  getSkyboxAtmosphere,
 } from '../utils/textures';
 import { sound } from '../utils/audio';
 import { ArrowUp, ArrowDown, Compass, Hand, Maximize2 } from 'lucide-react';
@@ -19,10 +21,13 @@ interface Viewport3DProps {
   rotateSnap: number;
   isPlayMode: boolean;
   activePlacementModel: RobloxObject | null;
+  placementRotation?: number;
+  isBreakMode?: boolean;
+  onDeleteObject?: (id: string) => void;
   lightingSettings: LightingSettings;
   onSelectObject: (id: string | null) => void;
   onUpdateObject: (id: string, updates: Partial<RobloxObject>) => void;
-  onPlaceObject: (pos: [number, number, number]) => void;
+  onPlaceObject: (pos: [number, number, number], rotY?: number) => void;
   onCancelPlacement: () => void;
   onLog: (msg: string, type?: 'log' | 'warn' | 'error') => void;
   playerHealth: number;
@@ -32,6 +37,7 @@ interface Viewport3DProps {
   mobileMoveVector: { x: number; y: number };
   mobileJumpTrigger: number;
   mobileEmoteTrigger: number;
+  mobileSprint?: boolean;
   showEditTouchControls?: boolean;
 }
 
@@ -43,6 +49,9 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   rotateSnap,
   isPlayMode,
   activePlacementModel,
+  placementRotation = 0,
+  isBreakMode = false,
+  onDeleteObject,
   lightingSettings,
   onSelectObject,
   onUpdateObject,
@@ -56,6 +65,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   mobileMoveVector,
   mobileJumpTrigger,
   mobileEmoteTrigger,
+  mobileSprint = false,
   showEditTouchControls = true,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -126,6 +136,24 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   // Trigger cache
   const touchedThrottleRef = useRef<Map<string, number>>(new Map());
 
+  // Synchronous refs for props so requestAnimationFrame loop NEVER reads stale state
+  const mobileMoveVectorRef = useRef(mobileMoveVector);
+  mobileMoveVectorRef.current = mobileMoveVector;
+
+  const mobileSprintRef = useRef(mobileSprint);
+  mobileSprintRef.current = mobileSprint;
+
+  const isPlayModeRef = useRef(isPlayMode);
+  isPlayModeRef.current = isPlayMode;
+
+  const objectsRef = useRef(objects);
+  objectsRef.current = objects;
+
+  // Play Mode Third-Person Orbit Camera
+  const playCamAngleRef = useRef({ yaw: 0, pitch: 0.28, distance: 15 });
+  const isOrbitingPlayCamRef = useRef(false);
+  const camPointerIdRef = useRef<number | null>(null);
+
   // Cached textures
   const texturesRef = useRef<{
     grid?: THREE.CanvasTexture;
@@ -171,6 +199,9 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.style.display = 'block';
     containerRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
@@ -218,28 +249,53 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     scene.add(ghostGroup);
     ghostMeshRef.current = ghostGroup;
 
-    // Window Resize listener
+    // Responsive Canvas Resize Observer (instantly handles sidebar open/close & orientation changes)
     const handleResize = () => {
       if (!containerRef.current || !rendererRef.current || !cameraRef.current) return;
       const w = containerRef.current.clientWidth;
       const h = containerRef.current.clientHeight;
+      if (w <= 0 || h <= 0) return;
       cameraRef.current.aspect = w / h;
       cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(w, h);
+      rendererRef.current.setSize(w, h, false);
     };
+
+    const resizeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+    resizeObserver.observe(containerRef.current);
     window.addEventListener('resize', handleResize);
 
     // Keyboard listener for Play mode & shortcuts
     const handleKeyDown = (e: KeyboardEvent) => {
-      keysPressedRef.current[e.key.toLowerCase()] = true;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      const key = e.key.toLowerCase();
+      keysPressedRef.current[key] = true;
       if (e.key === ' ' || e.code === 'Space') {
         keysPressedRef.current['space'] = true;
       }
+      if (key === 'shift' || e.shiftKey) {
+        keysPressedRef.current['shift'] = true;
+      }
+
+      // In Play mode, E key triggers wave emote, R key respawns character
+      if (isPlayModeRef.current) {
+        if (key === 'e' && playerRigRef.current) {
+          playerRigRef.current.emoteTimer = 2.5;
+        } else if (key === 'r' && playerRigRef.current) {
+          respawnPlayer(playerRigRef.current);
+        }
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
-      keysPressedRef.current[e.key.toLowerCase()] = false;
+      const key = e.key.toLowerCase();
+      keysPressedRef.current[key] = false;
       if (e.key === ' ' || e.code === 'Space') {
         keysPressedRef.current['space'] = false;
+      }
+      if (key === 'shift' || !e.shiftKey) {
+        keysPressedRef.current['shift'] = false;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -274,6 +330,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
 
     return () => {
       cancelAnimationFrame(animId);
+      resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -361,14 +418,14 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     });
   };
 
-  // Dynamic Scene Lighting, Time of Day, Ambient Color & Shadow Softness
+  // Dynamic Scene Lighting, Time of Day, Skybox, Ambient Color & Shadow Softness
   useEffect(() => {
     const scene = sceneRef.current;
     const sunLight = sunLightRef.current;
     const hemiLight = hemiLightRef.current;
     if (!scene || !sunLight || !hemiLight) return;
 
-    const { clockTime, ambientColor, shadowSoftness, sunBrightness } = lightingSettings;
+    const { clockTime, ambientColor, shadowSoftness, sunBrightness, skybox = 'Clear' } = lightingSettings;
 
     // 1. Time of Day Sun Trajectory (0:00 to 24:00)
     const timeAngle = ((clockTime - 6) / 24) * Math.PI * 2;
@@ -379,56 +436,24 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
 
     sunLight.position.set(sunX, Math.max(sunY, -80), sunZ);
 
-    // 2. Atmosphere & Sky Color transitions
-    let skyHex = '#78B6E8'; // Classic Roblox Blue Sky
-    let fogHex = '#97CEF2';
-    let sunLightHex = '#FFF9E6';
-    let intensity = sunBrightness;
+    // 2. Skybox Environment Texture
+    const skyTexture = getSkyboxTexture(skybox);
+    scene.background = skyTexture;
 
-    if (clockTime >= 5.2 && clockTime < 7.5) {
-      // Dawn / Sunrise
-      skyHex = '#FF9D76';
-      fogHex = '#E58A67';
-      sunLightHex = '#FFA366';
-      intensity *= 0.85;
-    } else if (clockTime >= 7.5 && clockTime <= 16.5) {
-      // Full Daytime
-      skyHex = '#78B6E8';
-      fogHex = '#97CEF2';
-      sunLightHex = '#FFF8E7';
-      intensity *= 1.25;
-    } else if (clockTime > 16.5 && clockTime <= 19.0) {
-      // Golden Sunset
-      skyHex = '#FF6F59';
-      fogHex = '#D45D48';
-      sunLightHex = '#FF7A45';
-      intensity *= 0.95;
-    } else if (clockTime > 19.0 && clockTime <= 20.5) {
-      // Twilight / Dusk
-      skyHex = '#2C3A62';
-      fogHex = '#243052';
-      sunLightHex = '#5577AA';
-      intensity *= 0.45;
-    } else {
-      // Midnight Sky with Moonlight
-      skyHex = '#0B1124';
-      fogHex = '#0E172E';
-      sunLightHex = '#446699';
-      intensity *= 0.3;
-    }
+    // 3. Atmosphere, Fog & Sun Lighting tuned to Skybox and ClockTime
+    const atmosphere = getSkyboxAtmosphere(skybox, clockTime);
 
-    scene.background = new THREE.Color(skyHex);
     if (scene.fog) {
-      (scene.fog as THREE.FogExp2).color.set(fogHex);
+      (scene.fog as THREE.FogExp2).color.set(atmosphere.fogColor);
     }
 
-    sunLight.color.set(sunLightHex);
-    sunLight.intensity = Math.max(0.08, intensity);
+    sunLight.color.set(atmosphere.sunColor);
+    sunLight.intensity = Math.max(0.08, sunBrightness * atmosphere.sunIntensityMultiplier);
 
-    // 3. Ambient Light (Hemisphere)
-    hemiLight.color.set(ambientColor);
+    // 4. Ambient Light (Hemisphere)
+    hemiLight.color.set(ambientColor || atmosphere.ambientColor);
 
-    // 4. Shadow Softness
+    // 5. Shadow Softness
     sunLight.shadow.radius = 1 + shadowSoftness * 12;
     sunLight.shadow.bias = -0.0003 - (1 - shadowSoftness) * 0.0004;
   }, [lightingSettings]);
@@ -512,13 +537,14 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     if (activePlacementModel) {
       const preview = create3DObject(activePlacementModel, texturesRef.current, true);
       ghostGroup.add(preview);
+      ghostGroup.rotation.y = (placementRotation * Math.PI) / 180;
       ghostGroup.visible = true;
     } else {
       ghostGroup.visible = false;
     }
-  }, [activePlacementModel]);
+  }, [activePlacementModel, placementRotation]);
 
-  // 5. Play Mode Player Rig Initialization
+  // 5. Play Mode Player Rig Initialization & Responsive Resize Trigger
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
@@ -532,6 +558,9 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       scene.add(rig.root);
       playerRigRef.current = rig;
 
+      // Reset camera orientation in Play mode
+      playCamAngleRef.current = { yaw: 0, pitch: 0.28, distance: 15 };
+
       onPlayerHealthChange(100);
       onLog('[Studio] Play mode started! Spawned character at SpawnLocation.', 'log');
       sound.playModeToggle(true);
@@ -543,6 +572,26 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
         sound.playModeToggle(false);
       }
     }
+
+    // Force canvas resize when switching modes to prevent layout lag
+    const resizeCheck = () => {
+      if (containerRef.current && rendererRef.current && cameraRef.current) {
+        const w = containerRef.current.clientWidth;
+        const h = containerRef.current.clientHeight;
+        if (w > 0 && h > 0) {
+          cameraRef.current.aspect = w / h;
+          cameraRef.current.updateProjectionMatrix();
+          rendererRef.current.setSize(w, h, false);
+        }
+      }
+    };
+    resizeCheck();
+    const t1 = setTimeout(resizeCheck, 50);
+    const t2 = setTimeout(resizeCheck, 200);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [isPlayMode]);
 
   // Mobile Jump Trigger
@@ -568,6 +617,15 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     const camera = cameraRef.current;
     if (!rig || !camera) return;
 
+    // Camera view orientation
+    const yaw = playCamAngleRef.current.yaw;
+    const pitch = playCamAngleRef.current.pitch;
+    const camDist = playCamAngleRef.current.distance;
+
+    // Horizontal forward & right vectors based on camera yaw
+    const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)).normalize();
+
     let moveX = 0;
     let moveZ = 0;
 
@@ -577,13 +635,15 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     if (keys['a'] || keys['arrowleft']) moveX -= 1;
     if (keys['d'] || keys['arrowright']) moveX += 1;
 
-    if (mobileMoveVector.x !== 0 || mobileMoveVector.y !== 0) {
-      moveX += mobileMoveVector.x;
-      moveZ += mobileMoveVector.y;
+    // Read live mobile joystick vector from synchronous ref
+    const mobileMove = mobileMoveVectorRef.current;
+    if (mobileMove && (mobileMove.x !== 0 || mobileMove.y !== 0)) {
+      moveX += mobileMove.x;
+      moveZ += mobileMove.y;
     }
 
-    const inputLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
-    const isMoving = inputLen > 0.1;
+    const inputLen = Math.hypot(moveX, moveZ);
+    const isMoving = inputLen > 0.05;
 
     if ((keys['space'] || keys[' ']) && rig.isGrounded) {
       rig.velocity.y = rig.jumpPower;
@@ -591,17 +651,11 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       sound.playJump();
     }
 
-    const forward = new THREE.Vector3();
-    camera.getWorldDirection(forward);
-    forward.y = 0;
-    forward.normalize();
-
-    const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), forward).negate();
-
     if (isMoving) {
-      const normX = moveX / Math.max(inputLen, 1);
-      const normZ = moveZ / Math.max(inputLen, 1);
+      const normX = moveX / inputLen;
+      const normZ = moveZ / inputLen;
 
+      // Desired direction relative to current camera viewing direction
       const targetDir = new THREE.Vector3()
         .addScaledVector(forward, -normZ)
         .addScaledVector(right, normX)
@@ -613,11 +667,16 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       let diff = targetAngle - currentAngle;
       while (diff < -Math.PI) diff += Math.PI * 2;
       while (diff > Math.PI) diff -= Math.PI * 2;
-      rig.rotationY += diff * 15 * delta;
+      rig.rotationY += diff * 18 * delta;
       rig.root.rotation.y = rig.rotationY;
 
-      rig.velocity.x = targetDir.x * rig.walkSpeed;
-      rig.velocity.z = targetDir.z * rig.walkSpeed;
+      const speedFactor = Math.min(inputLen, 1.0);
+      const isSprinting = Boolean(
+        keys['shift'] || keys['shiftleft'] || keys['shiftright'] || mobileSprintRef.current
+      );
+      const currentWalkSpeed = isSprinting ? rig.walkSpeed * 1.5 : rig.walkSpeed;
+      rig.velocity.x = targetDir.x * currentWalkSpeed * speedFactor;
+      rig.velocity.z = targetDir.z * currentWalkSpeed * speedFactor;
 
       rig.walkCycle += delta * (rig.walkSpeed * 0.6);
       const swing = Math.sin(rig.walkCycle) * 0.7;
@@ -630,8 +689,8 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
         rig.rightArm.rotation.z = -0.1;
       }
     } else {
-      rig.velocity.x *= 0.8;
-      rig.velocity.z *= 0.8;
+      rig.velocity.x *= 0.7;
+      rig.velocity.z *= 0.7;
       rig.leftLeg.rotation.x *= 0.8;
       rig.rightLeg.rotation.x *= 0.8;
       if (rig.emoteTimer <= 0) {
@@ -682,7 +741,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
 
     const now = performance.now();
 
-    for (const obj of objects) {
+    for (const obj of objectsRef.current) {
       if (!obj.canCollide && obj.behaviorType !== 'coin') continue;
 
       const objMesh = meshesMapRef.current.get(obj.id);
@@ -723,16 +782,15 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       respawnPlayer(rig);
     }
 
-    const targetCamDist = 14;
-    const targetCamHeight = 7;
+    // Third-person camera following avatar with smooth yaw/pitch orbit
     const camTargetPos = new THREE.Vector3(
-      rig.root.position.x - forward.x * targetCamDist,
-      rig.root.position.y + targetCamHeight,
-      rig.root.position.z - forward.z * targetCamDist
+      rig.root.position.x + camDist * Math.cos(pitch) * Math.sin(yaw),
+      rig.root.position.y + 2.5 + camDist * Math.sin(pitch),
+      rig.root.position.z + camDist * Math.cos(pitch) * Math.cos(yaw)
     );
 
-    camera.position.lerp(camTargetPos, 0.15);
-    camera.lookAt(rig.root.position.x, rig.root.position.y + 2.5, rig.root.position.z);
+    camera.position.lerp(camTargetPos, 0.2);
+    camera.lookAt(rig.root.position.x, rig.root.position.y + 2.2, rig.root.position.z);
   };
 
   const handleObjectTouched = (obj: RobloxObject, rig: NonNullable<typeof playerRigRef.current>) => {
@@ -786,10 +844,92 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     return raycaster;
   };
 
-  const handlePointerDown = (e: React.PointerEvent) => {
-    if (isPlayMode) return;
+  // Surface-aware raycast placement position calculator (Minecraft block stacking & snapping)
+  const calculatePlacementPosition = (
+    raycaster: THREE.Raycaster,
+    model: RobloxObject,
+    rotYDeg: number = 0
+  ): [number, number, number] => {
+    const snap = moveSnap || 1;
+    const selectableMeshes: THREE.Object3D[] = [];
+    meshesMapRef.current.forEach((mesh) => selectableMeshes.push(mesh));
 
+    // Determine dimensions taking Y rotation into account
+    const isRotated90 = Math.abs(rotYDeg % 180) === 90;
+    const width = isRotated90 ? model.size[2] : model.size[0];
+    const height = model.size[1];
+    const depth = isRotated90 ? model.size[0] : model.size[2];
+    const halfH = height / 2;
+
+    // Check intersection with any existing objects in scene (Minecraft placement on blocks, walls, floors, tables)
+    const intersects = raycaster.intersectObjects(selectableMeshes, true);
+    if (intersects.length > 0) {
+      const hit = intersects[0];
+      const normal = hit.face
+        ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize()
+        : new THREE.Vector3(0, 1, 0);
+
+      let targetX = hit.point.x;
+      let targetY = hit.point.y;
+      let targetZ = hit.point.z;
+
+      // 1. Top face hit (placing on top of a floor or wall or table)
+      if (normal.y > 0.4) {
+        targetY = hit.point.y + halfH;
+        targetX = Math.round(hit.point.x / snap) * snap;
+        targetZ = Math.round(hit.point.z / snap) * snap;
+      }
+      // 2. Bottom face hit (ceiling fixture)
+      else if (normal.y < -0.4) {
+        targetY = hit.point.y - halfH;
+        targetX = Math.round(hit.point.x / snap) * snap;
+        targetZ = Math.round(hit.point.z / snap) * snap;
+      }
+      // 3. Side face along X axis (placing next to a wall or block)
+      else if (Math.abs(normal.x) > Math.abs(normal.z)) {
+        const signX = normal.x > 0 ? 1 : -1;
+        targetX = Math.round((hit.point.x + signX * (width / 2)) / snap) * snap;
+        targetY = Math.round(hit.point.y / snap) * snap;
+        targetZ = Math.round(hit.point.z / snap) * snap;
+      }
+      // 4. Side face along Z axis
+      else {
+        const signZ = normal.z > 0 ? 1 : -1;
+        targetZ = Math.round((hit.point.z + signZ * (depth / 2)) / snap) * snap;
+        targetY = Math.round(hit.point.y / snap) * snap;
+        targetX = Math.round(hit.point.x / snap) * snap;
+      }
+
+      targetY = Math.max(halfH, targetY);
+      return [targetX, targetY, targetZ];
+    }
+
+    // Fallback: ground plane y = 0
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hitPoint = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(plane, hitPoint)) {
+      const snapX = Math.round(hitPoint.x / snap) * snap;
+      const snapZ = Math.round(hitPoint.z / snap) * snap;
+      const snapY = halfH;
+      return [snapX, snapY, snapZ];
+    }
+
+    return [0, halfH, 0];
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
     mousePrevRef.current = { x: e.clientX, y: e.clientY };
+
+    if (isPlayMode) {
+      if (camPointerIdRef.current === null) {
+        camPointerIdRef.current = e.pointerId;
+        isOrbitingPlayCamRef.current = true;
+        try {
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        } catch {}
+      }
+      return;
+    }
 
     if (e.button === 2) {
       isOrbitingRef.current = true;
@@ -803,18 +943,31 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     const raycaster = getRaycaster(e.clientX, e.clientY);
     if (!raycaster || !sceneRef.current) return;
 
-    // A. Check Placement Mode
-    if (activePlacementModel) {
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const hitPoint = new THREE.Vector3();
-      if (raycaster.ray.intersectPlane(plane, hitPoint)) {
-        const snap = moveSnap || 1;
-        const snapX = Math.round(hitPoint.x / snap) * snap;
-        const snapZ = Math.round(hitPoint.z / snap) * snap;
-        const snapY = activePlacementModel.size[1] / 2;
-        onPlaceObject([snapX, snapY, snapZ]);
-        sound.playPlace();
+    // A0. Check Break Mode (Minecraft pickaxe tool)
+    if (isBreakMode && onDeleteObject) {
+      const selectableMeshes: THREE.Object3D[] = [];
+      meshesMapRef.current.forEach((mesh) => selectableMeshes.push(mesh));
+      const intersects = raycaster.intersectObjects(selectableMeshes, true);
+      if (intersects.length > 0) {
+        let curr: THREE.Object3D | null = intersects[0].object;
+        while (curr && !curr.userData.robloxId) {
+          curr = curr.parent;
+        }
+        if (curr && curr.userData.robloxId) {
+          const targetId = curr.userData.robloxId;
+          onDeleteObject(targetId);
+          sound.playExplosion();
+          return;
+        }
       }
+      return;
+    }
+
+    // A. Check Placement Mode (Minecraft block & furniture placement)
+    if (activePlacementModel) {
+      const targetPos = calculatePlacementPosition(raycaster, activePlacementModel, placementRotation);
+      onPlaceObject(targetPos, placementRotation);
+      sound.playPlace();
       return;
     }
 
@@ -868,19 +1021,25 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     const dy = e.clientY - mousePrevRef.current.y;
     mousePrevRef.current = { x: e.clientX, y: e.clientY };
 
-    // Placement Mode ghost tracking
+    // Play Mode Camera Orbit on Screen Drag
+    if (isPlayMode) {
+      if (isOrbitingPlayCamRef.current && (camPointerIdRef.current === null || camPointerIdRef.current === e.pointerId)) {
+        playCamAngleRef.current.yaw -= dx * 0.007;
+        playCamAngleRef.current.pitch = Math.max(
+          -0.3,
+          Math.min(0.85, playCamAngleRef.current.pitch + dy * 0.007)
+        );
+      }
+      return;
+    }
+
+    // Placement Mode ghost tracking with surface snapping & rotation
     if (activePlacementModel && ghostMeshRef.current) {
       const raycaster = getRaycaster(e.clientX, e.clientY);
       if (raycaster) {
-        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-        const hitPoint = new THREE.Vector3();
-        if (raycaster.ray.intersectPlane(plane, hitPoint)) {
-          const snap = moveSnap || 1;
-          const snapX = Math.round(hitPoint.x / snap) * snap;
-          const snapZ = Math.round(hitPoint.z / snap) * snap;
-          const snapY = activePlacementModel.size[1] / 2;
-          ghostMeshRef.current.position.set(snapX, snapY, snapZ);
-        }
+        const targetPos = calculatePlacementPosition(raycaster, activePlacementModel, placementRotation);
+        ghostMeshRef.current.position.set(...targetPos);
+        ghostMeshRef.current.rotation.y = (placementRotation * Math.PI) / 180;
       }
       return;
     }
@@ -945,7 +1104,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       return;
     }
 
-    // Camera Orbiting (Updates target angle smoothly)
+    // Camera Orbiting in Edit Mode
     if (isOrbitingRef.current) {
       targetAngleRef.current.theta -= dx * 0.007;
       targetAngleRef.current.phi = Math.max(
@@ -954,7 +1113,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       );
     }
 
-    // Camera Panning
+    // Camera Panning in Edit Mode
     if (isPanningRef.current && cameraRef.current) {
       const panSpeed = 0.03 * (targetAngleRef.current.distance / 20);
       const right = new THREE.Vector3();
@@ -965,18 +1124,37 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     }
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.PointerEvent) => {
     isDraggingGizmoRef.current = false;
     activeGizmoAxisRef.current = null;
     isOrbitingRef.current = false;
     isPanningRef.current = false;
+
+    if (isPlayMode) {
+      if (e && camPointerIdRef.current !== null && e.pointerId === camPointerIdRef.current) {
+        try {
+          (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch {}
+        camPointerIdRef.current = null;
+        isOrbitingPlayCamRef.current = false;
+      } else if (!e) {
+        camPointerIdRef.current = null;
+        isOrbitingPlayCamRef.current = false;
+      }
+      return;
+    }
+    camPointerIdRef.current = null;
+    isOrbitingPlayCamRef.current = false;
   };
 
-  // Multi-Touch Handlers (Pinch to Zoom, Two-finger Pan)
+  // Multi-Touch Handlers (Pinch to Zoom, Two-finger Pan in Edit Mode)
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (isPlayMode) return;
+    if (isPlayMode) {
+      // In Play mode, pointer events manage camera orbiting with unique pointerId capture
+      return;
+    }
+
     if (e.touches.length === 2) {
-      // Initialize pinch gesture
       const t1 = e.touches[0];
       const t2 = e.touches[1];
       const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
@@ -990,20 +1168,21 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (isPlayMode) return;
+    if (isPlayMode) {
+      return;
+    }
+
     if (e.touches.length === 2 && initialPinchDistRef.current !== null && prevPinchMidpointRef.current) {
       const t1 = e.touches[0];
       const t2 = e.touches[1];
       const currentDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
       const ratio = initialPinchDistRef.current / Math.max(10, currentDist);
 
-      // Pinch to Zoom
       targetAngleRef.current.distance = Math.max(
         3,
         Math.min(120, initialPinchTargetDistRef.current * ratio)
       );
 
-      // Two-finger Pan
       const midX = (t1.clientX + t2.clientX) / 2;
       const midY = (t1.clientY + t2.clientY) / 2;
       const dx = midX - prevPinchMidpointRef.current.x;
@@ -1022,6 +1201,10 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
+    if (isPlayMode) {
+      return;
+    }
+
     if (e.touches.length < 2) {
       initialPinchDistRef.current = null;
       prevPinchMidpointRef.current = null;
@@ -1029,8 +1212,14 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   };
 
   const handleWheel = (e: React.WheelEvent) => {
-    if (isPlayMode) return;
-    const zoomDelta = e.deltaY * 0.025;
+    const zoomDelta = e.deltaY * 0.02;
+    if (isPlayMode) {
+      playCamAngleRef.current.distance = Math.max(
+        4,
+        Math.min(40, playCamAngleRef.current.distance + zoomDelta)
+      );
+      return;
+    }
     targetAngleRef.current.distance = Math.max(
       3,
       Math.min(120, targetAngleRef.current.distance + zoomDelta)
@@ -1082,7 +1271,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full select-none cursor-default overflow-hidden bg-sky-300 touch-none"
+      className="relative w-full h-full select-none cursor-default overflow-hidden bg-[#18181b] touch-none"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1410,10 +1599,20 @@ function createBaconHairRig(textures: { face?: THREE.CanvasTexture; shirt?: THRE
   const pantsMat = new THREE.MeshStandardMaterial({ color: '#1A2329', roughness: 0.7 });
   const hairMat = new THREE.MeshStandardMaterial({ color: '#6A3E1B', roughness: 0.8 });
 
-  const torsoMat = textures.shirt
+  const jacketMat = new THREE.MeshStandardMaterial({ color: '#1e2022', roughness: 0.7 });
+  const shirtFrontMat = textures.shirt
     ? new THREE.MeshStandardMaterial({ map: textures.shirt, roughness: 0.6 })
     : new THREE.MeshStandardMaterial({ color: '#0066CC', roughness: 0.6 });
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), torsoMat);
+
+  const torsoMaterials: THREE.Material[] = [
+    jacketMat, // +X right
+    jacketMat, // -X left
+    jacketMat, // +Y top
+    pantsMat,  // -Y bottom
+    shirtFrontMat, // +Z front (face side)
+    jacketMat, // -Z back
+  ];
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), torsoMaterials);
   torso.position.y = 2.6;
   torso.castShadow = true;
   root.add(torso);

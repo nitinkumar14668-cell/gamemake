@@ -18,6 +18,9 @@ import { PublishModal } from './components/PublishModal';
 import { ScriptEditorModal } from './components/ScriptEditorModal';
 import { PlayOverlay } from './components/PlayOverlay';
 import { OutputConsole } from './components/OutputConsole';
+import { MinecraftHotbar } from './components/MinecraftHotbar';
+import { OpenCodeModal } from './components/OpenCodeModal';
+import { CommandsChatPanel } from './components/CommandsChatPanel';
 import { sound } from './utils/audio';
 
 export default function App() {
@@ -44,7 +47,14 @@ export default function App() {
     const saved = localStorage.getItem('roblox_lighting_settings_v1');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        return {
+          clockTime: typeof parsed.clockTime === 'number' ? parsed.clockTime : 14.0,
+          ambientColor: parsed.ambientColor || '#FFFFFF',
+          shadowSoftness: typeof parsed.shadowSoftness === 'number' ? parsed.shadowSoftness : 0.65,
+          sunBrightness: typeof parsed.sunBrightness === 'number' ? parsed.sunBrightness : 1.25,
+          skybox: parsed.skybox || 'Clear',
+        };
       } catch {}
     }
     return {
@@ -52,6 +62,7 @@ export default function App() {
       ambientColor: '#FFFFFF',
       shadowSoftness: 0.65,
       sunBrightness: 1.25,
+      skybox: 'Clear',
     };
   });
 
@@ -69,12 +80,17 @@ export default function App() {
   // Touch Nav in Edit Mode Toggle
   const [showEditTouchControls, setShowEditTouchControls] = useState<boolean>(true);
 
-  // Placement Mode State (Module Section)
+  // Placement Mode State (Module Section & Minecraft Hotbar)
   const [activePlacementModel, setActivePlacementModel] = useState<RobloxObject | null>(null);
+  const [placementRotation, setPlacementRotation] = useState<number>(0);
+  const [isBreakMode, setIsBreakMode] = useState<boolean>(false);
+  const [isContinuousMode, setIsContinuousMode] = useState<boolean>(true);
 
   // Modals & Panels
   const [isToolboxOpen, setIsToolboxOpen] = useState<boolean>(false);
   const [isCustomModelModalOpen, setIsCustomModelModalOpen] = useState<boolean>(false);
+  const [isOpenCodeModalOpen, setIsOpenCodeModalOpen] = useState<boolean>(false);
+  const [isCommandsChatOpen, setIsCommandsChatOpen] = useState<boolean>(true);
   const [isPublishModalOpen, setIsPublishModalOpen] = useState<boolean>(false);
   const [isScriptEditorOpen, setIsScriptEditorOpen] = useState<boolean>(false);
   const [editingScriptTargetId, setEditingScriptTargetId] = useState<string | null>(null);
@@ -102,6 +118,7 @@ export default function App() {
   const [mobileMoveVector, setMobileMoveVector] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [mobileJumpTrigger, setMobileJumpTrigger] = useState<number>(0);
   const [mobileEmoteTrigger, setMobileEmoteTrigger] = useState<number>(0);
+  const [isSprinting, setIsSprinting] = useState<boolean>(false);
 
   // Clipboard for copy/paste
   const clipboardRef = useRef<RobloxObject | null>(null);
@@ -235,17 +252,56 @@ export default function App() {
     sound.playPlace();
   }, [addLog]);
 
-  // Select Model for Placement from Toolbox Module Section
-  const handleSelectModelForPlacement = useCallback((template: CatalogModelTemplate) => {
+  // Select Model for Placement from Toolbox Module Section or Minecraft Hotbar
+  const handleSelectModelForPlacement = useCallback((template: CatalogModelTemplate | null) => {
+    if (!template) {
+      setActivePlacementModel(null);
+      return;
+    }
     const newObj: RobloxObject = {
       ...template.template,
       id: 'model_' + Math.random().toString(36).substring(2, 9),
     };
     setActivePlacementModel(newObj);
+    setIsBreakMode(false);
     setIsToolboxOpen(false);
-    addLog(`Placement mode: Click anywhere on map to drop "${newObj.name}"`, 'log');
+    addLog(`Placement mode: Click anywhere on floor/wall/ground to place "${newObj.name}"`, 'log');
     sound.playClick();
   }, [addLog]);
+
+  const handleRotatePlacement = useCallback(() => {
+    setPlacementRotation((prev) => (prev + 90) % 360);
+  }, []);
+
+  const handleToggleBreakMode = useCallback(() => {
+    setIsBreakMode((prev) => {
+      const next = !prev;
+      if (next) {
+        setActivePlacementModel(null);
+        addLog('Minecraft Break Tool active! Click any object to break it.', 'log');
+      } else {
+        addLog('Exited Break Tool mode.', 'log');
+      }
+      return next;
+    });
+  }, [addLog]);
+
+  const handleToggleContinuousMode = useCallback(() => {
+    setIsContinuousMode((prev) => !prev);
+  }, []);
+
+  // Delete object directly (used by Minecraft Pickaxe break tool)
+  const handleDeleteObjectById = useCallback((id: string) => {
+    const target = objects.find((o) => o.id === id);
+    if (!target) return;
+    if (target.type === 'SpawnLocation' && objects.filter((o) => o.type === 'SpawnLocation').length <= 1) {
+      addLog('Cannot break primary SpawnLocation pad.', 'warn');
+      return;
+    }
+    setObjects((prev) => prev.filter((o) => o.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    addLog(`Destroyed: "${target.name}" [Minecraft Pickaxe]`, 'log');
+  }, [objects, selectedId, addLog]);
 
   // Direct insert model to origin
   const handleInsertModelDirect = useCallback((template: CatalogModelTemplate) => {
@@ -266,24 +322,53 @@ export default function App() {
     addLog(`Added "${model.name}" to Custom Models! Open Toolbox to place it.`, 'log');
   }, [addLog]);
 
-  // Confirm placement at clicked point on map
-  const handlePlaceObject = useCallback((pos: [number, number, number]) => {
+  // Confirm placement at clicked point on map (Minecraft stacking & continuous placement)
+  const handlePlaceObject = useCallback((pos: [number, number, number], rotY?: number) => {
     if (!activePlacementModel) return;
+    const finalRotY = typeof rotY === 'number' ? rotY : placementRotation;
     const finalObj: RobloxObject = {
       ...activePlacementModel,
+      id: 'model_' + Math.random().toString(36).substring(2, 9),
       position: pos,
+      rotation: [activePlacementModel.rotation[0], finalRotY, activePlacementModel.rotation[2]],
     };
     setObjects((prev) => [...prev, finalObj]);
     setSelectedId(finalObj.id);
-    setActivePlacementModel(null);
-    addLog(`Placed "${finalObj.name}" at (${pos[0]}, ${pos[1].toFixed(1)}, ${pos[2]})`, 'log');
+
+    // In continuous mode (like Minecraft), keep model active so user can place again immediately!
+    if (!isContinuousMode) {
+      setActivePlacementModel(null);
+    }
+    addLog(`Placed "${finalObj.name}" at (${pos[0]}, ${pos[1].toFixed(1)}, ${pos[2]}) [rot: ${finalRotY}°]`, 'log');
     sound.playPlace();
-  }, [activePlacementModel, addLog]);
+  }, [activePlacementModel, placementRotation, isContinuousMode, addLog]);
 
   const handleCancelPlacement = useCallback(() => {
     setActivePlacementModel(null);
+    setIsBreakMode(false);
     addLog('Placement mode canceled.', 'log');
   }, [addLog]);
+
+  // Place object directly into workspace (used by /spawn commands)
+  const handlePlaceObjectDirect = useCallback((object: RobloxObject) => {
+    setObjects((prev) => [...prev, object]);
+    setSelectedId(object.id);
+    addLog(`Spawned "${object.name}" into Workspace`, 'log');
+  }, [addLog]);
+
+  // Clear workspace (keep spawn)
+  const handleClearWorkspace = useCallback(() => {
+    setObjects((prev) => prev.filter((o) => o.type === 'SpawnLocation'));
+    setSelectedId(null);
+    addLog('Workspace cleared of non-spawn objects.', 'log');
+    sound.playPlace();
+  }, [addLog]);
+
+  // Update player stats from commands
+  const handleUpdatePlayerStats = useCallback((updates: { health?: number; coins?: number; speed?: number }) => {
+    if (typeof updates.health === 'number') setPlayerHealth(updates.health);
+    if (typeof updates.coins === 'number') setPlayerCoins((prev) => Math.max(0, prev + (updates.coins || 0)));
+  }, []);
 
   // Script Editor triggers
   const handleOpenScriptEditor = useCallback((objectId?: string) => {
@@ -457,6 +542,9 @@ export default function App() {
         onImportJSON={handleImportJSON}
         onOpenPublishModal={() => setIsPublishModalOpen(true)}
         onOpenCustomModelCreator={() => setIsCustomModelModalOpen(true)}
+        onOpenOpenCode={() => setIsOpenCodeModalOpen(true)}
+        isCommandsChatOpen={isCommandsChatOpen}
+        onToggleCommandsChat={() => setIsCommandsChatOpen((prev) => !prev)}
         showEditTouchControls={showEditTouchControls}
         onToggleEditTouchControls={() => setShowEditTouchControls((prev) => !prev)}
         placeName={placeName}
@@ -474,6 +562,9 @@ export default function App() {
             rotateSnap={rotateSnap}
             isPlayMode={isPlayMode}
             activePlacementModel={activePlacementModel}
+            placementRotation={placementRotation}
+            isBreakMode={isBreakMode}
+            onDeleteObject={handleDeleteObjectById}
             lightingSettings={lightingSettings}
             onSelectObject={setSelectedId}
             onUpdateObject={handleUpdateObject}
@@ -487,8 +578,24 @@ export default function App() {
             mobileMoveVector={mobileMoveVector}
             mobileJumpTrigger={mobileJumpTrigger}
             mobileEmoteTrigger={mobileEmoteTrigger}
+            mobileSprint={isSprinting}
             showEditTouchControls={showEditTouchControls}
           />
+
+          {/* Minecraft Quick-Select Hotbar (Build anywhere like Minecraft) */}
+          {!isPlayMode && (
+            <MinecraftHotbar
+              activePlacementModel={activePlacementModel}
+              onSelectPlacementModel={handleSelectModelForPlacement}
+              onRotatePlacement={handleRotatePlacement}
+              placementRotation={placementRotation}
+              isBreakMode={isBreakMode}
+              onToggleBreakMode={handleToggleBreakMode}
+              isContinuousMode={isContinuousMode}
+              onToggleContinuousMode={handleToggleContinuousMode}
+              onLog={addLog}
+            />
+          )}
 
           {/* In-Play Mode HUD Overlay */}
           <PlayOverlay
@@ -499,6 +606,8 @@ export default function App() {
             onMobileMove={setMobileMoveVector}
             onMobileJump={() => setMobileJumpTrigger((prev) => prev + 1)}
             onMobileEmote={() => setMobileEmoteTrigger((prev) => prev + 1)}
+            isSprinting={isSprinting}
+            onToggleSprint={() => setIsSprinting((prev) => !prev)}
             onResetCharacter={() => {
               setPlayerHealth(100);
               addLog('Player respawned at SpawnLocation', 'log');
@@ -560,7 +669,33 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Right-Side Commands & OpenCode AI Chat Section */}
+        {!isPlayMode && isCommandsChatOpen && (
+          <CommandsChatPanel
+            isOpen={isCommandsChatOpen}
+            onClose={() => setIsCommandsChatOpen(false)}
+            selectedObject={selectedObject}
+            onUpdateLighting={handleUpdateLighting}
+            onInsertPart={handleInsertPart}
+            onPlaceObjectDirect={handlePlaceObjectDirect}
+            onDeleteSelected={handleDeleteSelected}
+            onClearWorkspace={handleClearWorkspace}
+            onUpdatePlayerStats={handleUpdatePlayerStats}
+            onAttachScriptToObject={(id, code) => handleSaveScript(id, code)}
+            onLog={addLog}
+          />
+        )}
       </div>
+
+      {/* OpenCode Free AI Studio Plugin Modal */}
+      <OpenCodeModal
+        isOpen={isOpenCodeModalOpen}
+        onClose={() => setIsOpenCodeModalOpen(false)}
+        selectedObject={selectedObject}
+        onAttachScriptToObject={(id, code) => handleSaveScript(id, code)}
+        onLog={addLog}
+      />
 
       {/* Toolbox Modal (includes custom models) */}
       <ToolboxModal
